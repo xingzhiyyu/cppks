@@ -72,7 +72,69 @@ static QStringList carriagesForSeatClass(const Train &train, const QString &seat
     return {};
 }
 
-static QString trainSeatSummary(const Train &train)
+static QStringList seatColumnsForSeatClassName(const QString &seatClass)
+{
+    if (seatClass == "商务座") {
+        return {"A", "F"};
+    }
+    if (seatClass == "一等座") {
+        return {"A", "C", "D", "F"};
+    }
+    if (seatClass == "软卧") {
+        return {"上铺1", "下铺1"};
+    }
+    if (seatClass == "硬卧") {
+        return {"上铺1", "中铺1", "下铺1", "上铺2", "下铺2"};
+    }
+    return {"A", "B", "C", "D", "F"};
+}
+
+static int seatCapacityForClass(const Train &train, const QString &seatClass)
+{
+    return carriagesForSeatClass(train, seatClass).size() * 6 * seatColumnsForSeatClassName(seatClass).size();
+}
+
+static int availableSeatsForClass(const Train &train,
+                                  const QString &seatClass,
+                                  const QSet<QString> &soldSeats,
+                                  const QSet<QString> &reservedSeats = {})
+{
+    const QStringList carriages = carriagesForSeatClass(train, seatClass);
+    if (carriages.isEmpty()) {
+        return 0;
+    }
+
+    int unavailable = 0;
+    const auto countSeat = [&carriages, &unavailable](const QString &seatNo) {
+        if (carriages.contains(seatNo.section(' ', 0, 0))) {
+            ++unavailable;
+        }
+    };
+    for (const QString &seatNo : soldSeats) {
+        countSeat(seatNo);
+    }
+    for (const QString &seatNo : reservedSeats) {
+        countSeat(seatNo);
+    }
+
+    return qMax(0, seatCapacityForClass(train, seatClass) - unavailable);
+}
+
+static int totalAvailableSeatsForRun(const Train &train, const QSet<QString> &soldSeats)
+{
+    const bool isHighSpeed = train.id.startsWith('G') || train.id.startsWith('D');
+    const QStringList classes = isHighSpeed
+        ? QStringList{"商务座", "一等座", "二等座"}
+        : QStringList{"软卧", "硬卧", "硬座"};
+
+    int total = 0;
+    for (const QString &seatClass : classes) {
+        total += availableSeatsForClass(train, seatClass, soldSeats);
+    }
+    return total;
+}
+
+static QString trainSeatSummary(const Train &train, const QSet<QString> &soldSeats)
 {
     const bool isHighSpeed = train.id.startsWith('G') || train.id.startsWith('D');
     const auto formatSeat = [](const QString &name, int price, int count) {
@@ -84,13 +146,13 @@ static QString trainSeatSummary(const Train &train)
     QStringList seats;
     const QString seat1 = formatSeat(isHighSpeed ? "商务座" : "软卧",
                                      isHighSpeed ? train.priceBusiness : train.priceFirst,
-                                     isHighSpeed ? train.seatsBusiness : train.seatsFirst);
+                                     availableSeatsForClass(train, isHighSpeed ? "商务座" : "软卧", soldSeats));
     const QString seat2 = formatSeat(isHighSpeed ? "一等座" : "硬卧",
                                      isHighSpeed ? train.priceFirst : train.priceSecond,
-                                     isHighSpeed ? train.seatsFirst : train.seatsSecond);
+                                     availableSeatsForClass(train, isHighSpeed ? "一等座" : "硬卧", soldSeats));
     const QString seat3 = formatSeat(isHighSpeed ? "二等座" : "硬座",
                                      isHighSpeed ? train.priceSecond : train.priceSecond - 80,
-                                     isHighSpeed ? train.seatsSecond : 45);
+                                     availableSeatsForClass(train, isHighSpeed ? "二等座" : "硬座", soldSeats));
     if (!seat1.isEmpty()) seats << seat1;
     if (!seat2.isEmpty()) seats << seat2;
     if (!seat3.isEmpty()) seats << seat3;
@@ -162,7 +224,7 @@ void MainWindow::initMockData()
         
         {"G79", "北京西", "广州南", "10:00", "18:02", "8时02分", 2910, 1495, 963, 6, 12, 50},
         {"G80", "广州南", "北京西", "12:15", "20:25", "8时10分", 2910, 1495, 963, 3, 5, 80},
-        
+        {"G980","北京西", "香港西九龙", "10:00", "18:45", "8时45分", 2945, 1500, 980, 3, 7, 180},
         {"K105", "北京", "深圳东", "23:56", "05:08", "29时12分", 0, 480, 255, 0, 18, 40},
         {"Z13", "北京", "广州", "20:15", "16:20", "20时05分", 0, 450, 240, 0, 10, 35}
     };
@@ -350,15 +412,15 @@ void MainWindow::renderTrainList(const QList<Train> &trains)
 
     for (int row = 0; row < trains.size(); ++row) {
         const Train &train = trains[row];
-        const int soldCount = soldSeatsByRun.value(runKey(date, train.id)).size();
-        const int availableCount = qMax(0, 30 - soldCount);
+        const QSet<QString> soldSeats = soldSeatsByRun.value(runKey(date, train.id));
+        const int availableCount = totalAvailableSeatsForRun(train, soldSeats);
         auto *idItem = readonlyItem(train.id);
         idItem->setData(Qt::UserRole, train.id);
         ui->trainTable->setItem(row, 0, idItem);
         ui->trainTable->setItem(row, 1, readonlyItem(QString("%1\n%2").arg(train.depTime, train.from)));
         ui->trainTable->setItem(row, 2, readonlyItem(QString("%1\n%2").arg(train.arrTime, train.to)));
         ui->trainTable->setItem(row, 3, readonlyItem(train.duration));
-        ui->trainTable->setItem(row, 4, readonlyItem(QString("%1 / 剩余座位 %2").arg(trainSeatSummary(train)).arg(availableCount)));
+        ui->trainTable->setItem(row, 4, readonlyItem(QString("%1 / 剩余座位 %2").arg(trainSeatSummary(train, soldSeats)).arg(availableCount)));
 
         const bool available = trainHasTickets(train) && availableCount > 0;
         auto *statusItem = readonlyItem(available ? "可预订" : "已售罄");
@@ -969,6 +1031,8 @@ void MainWindow::onChangeTicket()
     table->setSelectionMode(QAbstractItemView::SingleSelection);
     table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    table->setSelectionMode(QAbstractItemView::NoSelection);
+    table->setFocusPolicy(Qt::NoFocus);
     layout->addWidget(table);
 
     const Order &oldOrder = orders[orderIndex];
@@ -982,18 +1046,8 @@ void MainWindow::onChangeTicket()
 
             const QString trialSeat = autoSeatForRun(date, train.id, oldOrder.seatClass);
             if (!trialSeat.isEmpty()) {
-                QStringList seatColumns = seatColumnsForClass(oldOrder.seatClass);
-                seatColumns.removeAll("过道");
-                const int classCapacity = carriagesForSeatClass(train, oldOrder.seatClass).size() * 6 * seatColumns.size();
-                int soldInClass = 0;
                 const QSet<QString> soldSeats = soldSeatsByRun.value(runKey(date, train.id));
-                const QStringList classCarriages = carriagesForSeatClass(train, oldOrder.seatClass);
-                for (const QString &seatNo : soldSeats) {
-                    if (classCarriages.contains(seatNo.section(' ', 0, 0))) {
-                        ++soldInClass;
-                    }
-                }
-                const int availableCount = qMax(0, classCapacity - soldInClass);
+                const int availableCount = availableSeatsForClass(train, oldOrder.seatClass, soldSeats);
                 table->insertRow(optionRow);
                 auto *dateItem = readonlyItem(date);
                 dateItem->setData(Qt::UserRole, train.id);
@@ -1331,6 +1385,8 @@ void MainWindow::onDirectTicket()
     }
 
     Train train;
+    QString seatClass;
+    QString seatNo;
     bool found = false;
     for (const auto &candidate : allTrains) {
         if (!requestedTrainId.isEmpty() && candidate.id != requestedTrainId) {
@@ -1339,22 +1395,22 @@ void MainWindow::onDirectTicket()
         if (candidate.to != destination) {
             continue;
         }
-        if (soldSeatsByRun.value(runKey(date, candidate.id)).size() >= 30) {
+
+        const QString candidateSeatClass = (candidate.id.startsWith('G') || candidate.id.startsWith('D')) ? "二等座" : "硬座";
+        const QString candidateSeatNo = autoSeatForRun(date, candidate.id, candidateSeatClass);
+        if (candidateSeatNo.isEmpty()) {
             continue;
         }
+
         train = candidate;
+        seatClass = candidateSeatClass;
+        seatNo = candidateSeatNo;
         found = true;
         break;
     }
 
     if (!found) {
         QMessageBox::warning(this, "无票可售", "没有找到符合条件且有余座的班次。");
-        return;
-    }
-
-    const QString seatNo = autoSeatForRun(date, train.id, (train.id.startsWith('G') || train.id.startsWith('D')) ? "二等座" : "硬座");
-    if (seatNo.isEmpty()) {
-        QMessageBox::warning(this, "无票可售", "该班次已无可售座位。");
         return;
     }
 
@@ -1370,7 +1426,7 @@ void MainWindow::onDirectTicket()
     order.date = date;
     order.depTime = train.depTime;
     order.arrTime = train.arrTime;
-    order.seatClass = (train.id.startsWith('G') || train.id.startsWith('D')) ? "二等座" : "硬座";
+    order.seatClass = seatClass;
     order.seatNo = seatNo;
     order.status = "已出票";
     order.fare = fareForSeatClass(train, order.seatClass);
