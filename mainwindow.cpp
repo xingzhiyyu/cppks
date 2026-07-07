@@ -56,6 +56,22 @@ static bool trainSupportsSeatClass(const Train &train, const QString &seatClass)
     return false;
 }
 
+static bool trainDefinesSeatClass(const Train &train, const QString &seatClass)
+{
+    const bool isHighSpeed = train.id.startsWith('G') || train.id.startsWith('D');
+    if (isHighSpeed) {
+        if (seatClass == "商务座") return train.priceBusiness > 0;
+        if (seatClass == "一等座") return train.priceFirst > 0;
+        if (seatClass == "二等座") return train.priceSecond > 0;
+        return false;
+    }
+
+    if (seatClass == "软卧") return train.priceFirst > 0;
+    if (seatClass == "硬卧") return train.priceSecond > 0;
+    if (seatClass == "硬座") return train.priceSecond > 80;
+    return false;
+}
+
 static QStringList carriagesForSeatClass(const Train &train, const QString &seatClass)
 {
     const bool isHighSpeed = train.id.startsWith('G') || train.id.startsWith('D');
@@ -246,7 +262,7 @@ void MainWindow::setupUiLayout()
     connect(ui->seatTable, &QTableWidget::cellClicked, this, &MainWindow::onSeatCellClicked);
     connect(ui->carriageTable, &QTableWidget::cellClicked, this, [this](int, int column) {
         QTableWidgetItem *item = ui->carriageTable->item(0, column);
-        if (!item) {
+        if (!item || item->data(Qt::UserRole + 2).toBool()) {
             return;
         }
         const QString seatClass = item->data(Qt::UserRole).toString();
@@ -562,27 +578,27 @@ void MainWindow::setupCarriageMap()
     QList<Carriage> carriages;
     const bool isHighSpeed = selectedTrain.id.startsWith('G') || selectedTrain.id.startsWith('D');
     if (isHighSpeed) {
-        if (trainSupportsSeatClass(selectedTrain, "商务座")) {
+        if (trainDefinesSeatClass(selectedTrain, "商务座")) {
             carriages.append(Carriage("01车", "商务座"));
         }
-        if (trainSupportsSeatClass(selectedTrain, "一等座")) {
+        if (trainDefinesSeatClass(selectedTrain, "一等座")) {
             carriages.append(Carriage("02车", "一等座"));
             carriages.append(Carriage("03车", "一等座"));
         }
-        if (trainSupportsSeatClass(selectedTrain, "二等座")) {
+        if (trainDefinesSeatClass(selectedTrain, "二等座")) {
             carriages.append(Carriage("04车", "二等座"));
             carriages.append(Carriage("05车", "二等座"));
             carriages.append(Carriage("06车", "二等座"));
         }
     } else {
-        if (trainSupportsSeatClass(selectedTrain, "软卧")) {
+        if (trainDefinesSeatClass(selectedTrain, "软卧")) {
             carriages.append(Carriage("01车", "软卧"));
         }
-        if (trainSupportsSeatClass(selectedTrain, "硬卧")) {
+        if (trainDefinesSeatClass(selectedTrain, "硬卧")) {
             carriages.append(Carriage("02车", "硬卧"));
             carriages.append(Carriage("03车", "硬卧"));
         }
-        if (trainSupportsSeatClass(selectedTrain, "硬座")) {
+        if (trainDefinesSeatClass(selectedTrain, "硬座")) {
             carriages.append(Carriage("04车", "硬座"));
             carriages.append(Carriage("05车", "硬座"));
         }
@@ -590,12 +606,15 @@ void MainWindow::setupCarriageMap()
 
     ui->carriageTable->setColumnCount(carriages.size());
     ui->carriageTable->setRowCount(1);
+    const QString date = ui->dateInput->date().toString("yyyy-MM-dd");
+    const QSet<QString> soldSeats = soldSeatsByRun.value(runKey(date, selectedTrain.id));
     for (int col = 0; col < carriages.size(); ++col) {
         const Carriage &carriage = carriages[col];
         auto *item = readonlyItem(QString("%1\n%2").arg(carriage.no, carriage.seatClass));
         item->setTextAlignment(Qt::AlignCenter);
         item->setData(Qt::UserRole, carriage.seatClass);
         item->setData(Qt::UserRole + 1, carriage.no);
+        item->setData(Qt::UserRole + 2, availableSeatsForClass(selectedTrain, carriage.seatClass, soldSeats) <= 0);
         ui->carriageTable->setItem(0, col, item);
     }
 
@@ -614,6 +633,9 @@ void MainWindow::updateCarriageSelection(const QString &seatClass)
         }
 
         if (item->data(Qt::UserRole).toString() == seatClass) {
+            if (item->data(Qt::UserRole + 2).toBool()) {
+                continue;
+            }
             if (firstMatchingCarriageNo.isEmpty()) {
                 firstMatchingCarriageNo = item->data(Qt::UserRole + 1).toString();
             }
@@ -634,8 +656,10 @@ void MainWindow::updateCarriageSelection(const QString &seatClass)
         }
 
         const bool selected = item->data(Qt::UserRole + 1).toString() == selectedCarriageNo;
-        item->setBackground(QBrush(selected ? QColor("#9ca3af") : QColor("#f9fafb")));
-        item->setForeground(QBrush(selected ? QColor("#181586") : QColor("#374151")));
+        const bool unavailable = item->data(Qt::UserRole + 2).toBool();
+        item->setBackground(QBrush(unavailable ? QColor("#e5e7eb") : (selected ? QColor("#9ca3af") : QColor("#f9fafb"))));
+        item->setForeground(QBrush(unavailable ? QColor("#9ca3af") : (selected ? QColor("#181586") : QColor("#374151"))));
+        item->setToolTip(unavailable ? "该席别无票" : QString());
     }
 
     ui->cabinTitle->setText(QString("%1 %2选座图").arg(selectedCarriageNo, seatClass));
