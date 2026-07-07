@@ -480,13 +480,18 @@ void MainWindow::onBookTrain(const QString &trainId)
     ui->newPassengerSeatClass->clear();
     bool isHighSpeed = selectedTrain.id.startsWith('G') || selectedTrain.id.startsWith('D');
     if (isHighSpeed) {
-        if (selectedTrain.priceSecond > 0) ui->newPassengerSeatClass->addItem("二等座");
-        if (selectedTrain.priceFirst > 0) ui->newPassengerSeatClass->addItem("一等座");
-        if (selectedTrain.priceBusiness > 0) ui->newPassengerSeatClass->addItem("商务座");
+        if (trainSupportsSeatClass(selectedTrain, "二等座")) ui->newPassengerSeatClass->addItem("二等座");
+        if (trainSupportsSeatClass(selectedTrain, "一等座")) ui->newPassengerSeatClass->addItem("一等座");
+        if (trainSupportsSeatClass(selectedTrain, "商务座")) ui->newPassengerSeatClass->addItem("商务座");
     } else {
-        ui->newPassengerSeatClass->addItem("硬座");
-        if (selectedTrain.priceSecond > 0) ui->newPassengerSeatClass->addItem("硬卧");
-        if (selectedTrain.priceFirst > 0) ui->newPassengerSeatClass->addItem("软卧");
+        if (trainSupportsSeatClass(selectedTrain, "硬座")) ui->newPassengerSeatClass->addItem("硬座");
+        if (trainSupportsSeatClass(selectedTrain, "硬卧")) ui->newPassengerSeatClass->addItem("硬卧");
+        if (trainSupportsSeatClass(selectedTrain, "软卧")) ui->newPassengerSeatClass->addItem("软卧");
+    }
+
+    if (ui->newPassengerSeatClass->count() == 0) {
+        QMessageBox::warning(this, "车票售罄", "该车次所有席别均无可售座位。");
+        return;
     }
 
     activeStep = 1;
@@ -557,28 +562,30 @@ void MainWindow::setupCarriageMap()
     QList<Carriage> carriages;
     const bool isHighSpeed = selectedTrain.id.startsWith('G') || selectedTrain.id.startsWith('D');
     if (isHighSpeed) {
-        if (selectedTrain.priceBusiness > 0) {
+        if (trainSupportsSeatClass(selectedTrain, "商务座")) {
             carriages.append(Carriage("01车", "商务座"));
         }
-        if (selectedTrain.priceFirst > 0) {
+        if (trainSupportsSeatClass(selectedTrain, "一等座")) {
             carriages.append(Carriage("02车", "一等座"));
             carriages.append(Carriage("03车", "一等座"));
         }
-        if (selectedTrain.priceSecond > 0) {
+        if (trainSupportsSeatClass(selectedTrain, "二等座")) {
             carriages.append(Carriage("04车", "二等座"));
             carriages.append(Carriage("05车", "二等座"));
             carriages.append(Carriage("06车", "二等座"));
         }
     } else {
-        if (selectedTrain.priceFirst > 0) {
+        if (trainSupportsSeatClass(selectedTrain, "软卧")) {
             carriages.append(Carriage("01车", "软卧"));
         }
-        if (selectedTrain.priceSecond > 0) {
+        if (trainSupportsSeatClass(selectedTrain, "硬卧")) {
             carriages.append(Carriage("02车", "硬卧"));
             carriages.append(Carriage("03车", "硬卧"));
         }
-        carriages.append(Carriage("04车", "硬座"));
-        carriages.append(Carriage("05车", "硬座"));
+        if (trainSupportsSeatClass(selectedTrain, "硬座")) {
+            carriages.append(Carriage("04车", "硬座"));
+            carriages.append(Carriage("05车", "硬座"));
+        }
     }
 
     ui->carriageTable->setColumnCount(carriages.size());
