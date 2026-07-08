@@ -13,6 +13,7 @@
 #include <QRandomGenerator>
 #include <QScrollBar>
 #include <QSizePolicy>
+#include <QStandardItemModel>
 #include <QTableWidgetItem>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -178,9 +179,10 @@ static QString trainSeatSummary(const Train &train, const QSet<QString> &soldSea
 static void setRowColors(QTableWidget *table, int selectedRow)
 {
     for (int r = 0; r < table->rowCount(); ++r) {
+        const bool unavailable = table->item(r, 0) && table->item(r, 0)->data(Qt::UserRole + 2).toBool();
         bool isSelected = (r == selectedRow);
-        QColor bg = isSelected ? QColor("#9ca3af") : QColor("#ffffff");
-        QColor fg = isSelected ? QColor("#181586") : QColor("#111827");
+        QColor bg = unavailable ? QColor("#e5e7eb") : (isSelected ? QColor("#9ca3af") : QColor("#ffffff"));
+        QColor fg = unavailable ? QColor("#9ca3af") : (isSelected ? QColor("#181586") : QColor("#111827"));
         for (int c = 0; c < table->columnCount(); ++c) {
             QTableWidgetItem *item = table->item(r, c);
             if (item) {
@@ -360,6 +362,10 @@ void MainWindow::setupUiLayout()
 
     updateAccountUi();
     connect(ui->trainTable, &QTableWidget::cellClicked, this, [this](int row, int) {
+        QTableWidgetItem *idItem = ui->trainTable->item(row, 0);
+        if (!idItem || idItem->data(Qt::UserRole + 2).toBool()) {
+            return;
+        }
         selectedTrainRow = row;
         applyOrderRowHighlight(ui->trainTable, selectedTrainRow);
     });
@@ -423,39 +429,58 @@ void MainWindow::renderTrainList(const QList<Train> &trains)
 {
     filteredTrains = trains;
     ui->trainTable->setRowCount(trains.size());
-    ui->bookSelectedBtn->setEnabled(!trains.isEmpty());
+    ui->bookSelectedBtn->setEnabled(false);
     const QString date = ui->dateInput->date().toString("yyyy-MM-dd");
 
     for (int row = 0; row < trains.size(); ++row) {
         const Train &train = trains[row];
         const QSet<QString> soldSeats = soldSeatsByRun.value(runKey(date, train.id));
         const int availableCount = totalAvailableSeatsForRun(train, soldSeats);
+        const bool available = trainHasTickets(train) && availableCount > 0;
         auto *idItem = readonlyItem(train.id);
         idItem->setData(Qt::UserRole, train.id);
+        idItem->setData(Qt::UserRole + 2, !available);
         ui->trainTable->setItem(row, 0, idItem);
         ui->trainTable->setItem(row, 1, readonlyItem(QString("%1\n%2").arg(train.depTime, train.from)));
         ui->trainTable->setItem(row, 2, readonlyItem(QString("%1\n%2").arg(train.arrTime, train.to)));
         ui->trainTable->setItem(row, 3, readonlyItem(train.duration));
         ui->trainTable->setItem(row, 4, readonlyItem(QString("%1 / 剩余座位 %2").arg(trainSeatSummary(train, soldSeats)).arg(availableCount)));
 
-        const bool available = trainHasTickets(train) && availableCount > 0;
         auto *statusItem = readonlyItem(available ? "可预订" : "已售罄");
         statusItem->setForeground(available ? QBrush(QColor("#0f766e")) : QBrush(QColor("#ef4444")));
         ui->trainTable->setItem(row, 5, statusItem);
         ui->trainTable->setRowHeight(row, 58);
+
+        if (!available) {
+            for (int c = 0; c < ui->trainTable->columnCount(); ++c) {
+                QTableWidgetItem *item = ui->trainTable->item(row, c);
+                if (item) {
+                    item->setBackground(QBrush(QColor("#e5e7eb")));
+                    item->setForeground(QBrush(QColor("#9ca3af")));
+                    item->setToolTip("该车次已售罄");
+                }
+            }
+        }
     }
 
-    if (!trains.isEmpty()) {
-        selectedTrainRow = 0;
+    selectedTrainRow = -1;
+    for (int row = 0; row < ui->trainTable->rowCount(); ++row) {
+        QTableWidgetItem *idItem = ui->trainTable->item(row, 0);
+        if (idItem && !idItem->data(Qt::UserRole + 2).toBool()) {
+            selectedTrainRow = row;
+            break;
+        }
+    }
+
+    if (selectedTrainRow >= 0) {
+        ui->bookSelectedBtn->setEnabled(true);
         for (int c = 0; c < ui->trainTable->columnCount(); ++c) {
-            QTableWidgetItem *item = ui->trainTable->item(0, c);
+            QTableWidgetItem *item = ui->trainTable->item(selectedTrainRow, c);
             if (item) {
                 item->setBackground(QBrush(QColor("#9ca3af")));
                 item->setForeground(QBrush(QColor("#181586")));
             }
         }
-    } else {
-        selectedTrainRow = -1;
     }
 }
 
@@ -468,6 +493,10 @@ void MainWindow::onBookSelectedTrain()
     }
 
     const QString trainId = ui->trainTable->item(row, 0)->data(Qt::UserRole).toString();
+    if (ui->trainTable->item(row, 0)->data(Qt::UserRole + 2).toBool()) {
+        QMessageBox::warning(this, "车票售罄", "该车次已售罄，请选择其他车次。");
+        return;
+    }
     for (const auto &train : filteredTrains) {
         if (train.id == trainId && !trainHasTickets(train)) {
             QMessageBox::warning(this, "车票售罄", "该车次已售罄，请选择其他车次。");
@@ -494,21 +523,43 @@ void MainWindow::onBookTrain(const QString &trainId)
     ui->newPassengerId->clear();
 
     ui->newPassengerSeatClass->clear();
+    auto *seatClassModel = qobject_cast<QStandardItemModel *>(ui->newPassengerSeatClass->model());
+    int firstAvailableSeatClass = -1;
+    const auto addSeatClassOption = [this, seatClassModel, &firstAvailableSeatClass](const QString &seatClass) {
+        if (!trainDefinesSeatClass(selectedTrain, seatClass)) {
+            return;
+        }
+
+        const bool available = trainSupportsSeatClass(selectedTrain, seatClass);
+        ui->newPassengerSeatClass->addItem(available ? seatClass : QString("%1（无票）").arg(seatClass), seatClass);
+        const int idx = ui->newPassengerSeatClass->count() - 1;
+        if (!available && seatClassModel) {
+            if (auto *item = seatClassModel->item(idx)) {
+                item->setEnabled(false);
+                item->setForeground(QBrush(QColor("#9ca3af")));
+            }
+        }
+        if (available && firstAvailableSeatClass < 0) {
+            firstAvailableSeatClass = idx;
+        }
+    };
+
     bool isHighSpeed = selectedTrain.id.startsWith('G') || selectedTrain.id.startsWith('D');
     if (isHighSpeed) {
-        if (trainSupportsSeatClass(selectedTrain, "二等座")) ui->newPassengerSeatClass->addItem("二等座");
-        if (trainSupportsSeatClass(selectedTrain, "一等座")) ui->newPassengerSeatClass->addItem("一等座");
-        if (trainSupportsSeatClass(selectedTrain, "商务座")) ui->newPassengerSeatClass->addItem("商务座");
+        addSeatClassOption("二等座");
+        addSeatClassOption("一等座");
+        addSeatClassOption("商务座");
     } else {
-        if (trainSupportsSeatClass(selectedTrain, "硬座")) ui->newPassengerSeatClass->addItem("硬座");
-        if (trainSupportsSeatClass(selectedTrain, "硬卧")) ui->newPassengerSeatClass->addItem("硬卧");
-        if (trainSupportsSeatClass(selectedTrain, "软卧")) ui->newPassengerSeatClass->addItem("软卧");
+        addSeatClassOption("硬座");
+        addSeatClassOption("硬卧");
+        addSeatClassOption("软卧");
     }
 
-    if (ui->newPassengerSeatClass->count() == 0) {
+    if (firstAvailableSeatClass < 0) {
         QMessageBox::warning(this, "车票售罄", "该车次所有席别均无可售座位。");
         return;
     }
+    ui->newPassengerSeatClass->setCurrentIndex(firstAvailableSeatClass);
 
     activeStep = 1;
     updateStepProgress();
@@ -1062,44 +1113,60 @@ void MainWindow::onChangeTicket()
     table->setSelectionMode(QAbstractItemView::SingleSelection);
     table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    table->setSelectionMode(QAbstractItemView::NoSelection);
     table->setFocusPolicy(Qt::NoFocus);
     layout->addWidget(table);
 
     const Order &oldOrder = orders[orderIndex];
     int optionRow = 0;
+    int firstAvailableRow = -1;
     for (int day = 0; day < 3; ++day) {
         const QString date = QDate::currentDate().addDays(day).toString("yyyy-MM-dd");
         for (const auto &train : allTrains) {
-            if (train.id == oldOrder.trainId || train.to != oldOrder.to || !trainSupportsSeatClass(train, oldOrder.seatClass)) {
+            if (train.id == oldOrder.trainId || train.to != oldOrder.to) {
                 continue;
             }
 
+            const bool supportsClass = trainSupportsSeatClass(train, oldOrder.seatClass);
             const QString trialSeat = autoSeatForRun(date, train.id, oldOrder.seatClass);
-            if (!trialSeat.isEmpty()) {
-                const QSet<QString> soldSeats = soldSeatsByRun.value(runKey(date, train.id));
-                const int availableCount = availableSeatsForClass(train, oldOrder.seatClass, soldSeats);
-                table->insertRow(optionRow);
-                auto *dateItem = readonlyItem(date);
-                dateItem->setData(Qt::UserRole, train.id);
-                table->setItem(optionRow, 0, dateItem);
-                table->setItem(optionRow, 1, readonlyItem(train.id));
-                table->setItem(optionRow, 2, readonlyItem(train.from));
-                table->setItem(optionRow, 3, readonlyItem(train.to));
-                table->setItem(optionRow, 4, readonlyItem(QString("%1 - %2").arg(train.depTime, train.arrTime)));
-                table->setItem(optionRow, 5, readonlyItem(QString::number(availableCount)));
-                table->setItem(optionRow, 6, readonlyItem(QString("¥%1").arg(fareForSeatClass(train, oldOrder.seatClass))));
-                ++optionRow;
+            const bool canChange = supportsClass && !trialSeat.isEmpty();
+            const QSet<QString> soldSeats = soldSeatsByRun.value(runKey(date, train.id));
+            const int availableCount = supportsClass ? availableSeatsForClass(train, oldOrder.seatClass, soldSeats) : 0;
+            table->insertRow(optionRow);
+            auto *dateItem = readonlyItem(date);
+            dateItem->setData(Qt::UserRole, train.id);
+            dateItem->setData(Qt::UserRole + 2, !canChange);
+            table->setItem(optionRow, 0, dateItem);
+            table->setItem(optionRow, 1, readonlyItem(train.id));
+            table->setItem(optionRow, 2, readonlyItem(train.from));
+            table->setItem(optionRow, 3, readonlyItem(train.to));
+            table->setItem(optionRow, 4, readonlyItem(QString("%1 - %2").arg(train.depTime, train.arrTime)));
+            table->setItem(optionRow, 5, readonlyItem(canChange ? QString::number(availableCount) : "无票"));
+            table->setItem(optionRow, 6, readonlyItem(canChange ? QString("¥%1").arg(fareForSeatClass(train, oldOrder.seatClass)) : "不可改签"));
+            if (!canChange) {
+                const QString reason = supportsClass ? "该席别无余票" : "该班次不支持原订单席别";
+                for (int c = 0; c < table->columnCount(); ++c) {
+                    QTableWidgetItem *item = table->item(optionRow, c);
+                    if (item) {
+                        item->setBackground(QBrush(QColor("#e5e7eb")));
+                        item->setForeground(QBrush(QColor("#9ca3af")));
+                        item->setToolTip(reason);
+                    }
+                }
+            } else if (firstAvailableRow < 0) {
+                firstAvailableRow = optionRow;
             }
+                ++optionRow;
         }
     }
 
     if (optionRow == 0) {
-        QMessageBox::information(this, "暂无可改签班次", "3 天内没有同一目的地且有余票的其他班次。");
+        QMessageBox::information(this, "暂无可改签班次", "3 天内没有同一目的地的其他班次。");
         return;
     }
 
-    table->selectRow(0);
+    if (firstAvailableRow >= 0) {
+        table->selectRow(firstAvailableRow);
+    }
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
@@ -1109,6 +1176,10 @@ void MainWindow::onChangeTicket()
     }
 
     const int chosenRow = table->currentRow();
+    if (table->item(chosenRow, 0)->data(Qt::UserRole + 2).toBool()) {
+        QMessageBox::warning(this, "改签失败", "该班次当前不可改签，请选择未置灰的班次。");
+        return;
+    }
     const QString newDate = table->item(chosenRow, 0)->text();
     const QString newTrainId = table->item(chosenRow, 1)->text();
     for (const auto &train : allTrains) {
@@ -1699,6 +1770,10 @@ QString MainWindow::getStylesheet() {
             selection-background-color: #4f46e5;
             selection-color: #ffffff;
         }
+        QComboBox QAbstractItemView::item:disabled {
+            background-color: #e5e7eb;
+            color: #9ca3af;
+        }
 
         /* Buttons */
         QPushButton {
@@ -1715,6 +1790,10 @@ QString MainWindow::getStylesheet() {
         }
         QPushButton:pressed {
             background-color: #4338ca;
+        }
+        QPushButton:disabled {
+            background-color: #e5e7eb;
+            color: #9ca3af;
         }
         QPushButton#swapBtn {
             background-color: transparent;
