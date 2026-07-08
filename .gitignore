@@ -3,4 +3,5 @@ build/
 *.user
 *.user.*
 tmp/
+__pycache__/
 .DS_Store
